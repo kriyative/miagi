@@ -69,8 +69,8 @@
   (make-local-variable 'miagi-current-message)
   (setq buffer-read-only t))
 
-(defun miagi-get-summary-buffer (account)
-  (let* ((buf-name (format "*miagi-summary: %s*" account))
+(defun miagi-get-summary-buffer (account &optional folder)
+  (let* ((buf-name (format "*miagi-summary: %s+%s*" account (or folder "INBOX")))
          (buf (get-buffer buf-name)))
     (unless buf
       (setq buf (get-buffer-create buf-name))
@@ -710,6 +710,7 @@
       (setq miagi-smtp-info smtp)
       (unless miagi-imap-buffer
         (miagi-open-connection))
+      (miagi-ensure-open)
       (miagi-load-folders)
       (miagi-get-messages)
       (switch-to-buffer (current-buffer)))))
