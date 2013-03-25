@@ -20,12 +20,13 @@ packages list. After it's been installed, add the following to the
 
     (require 'miagi)
     (setq miagi-accounts
-          '(("gmail-account-1" . (:name "gmail-account-1"
-                                  :email "your-gmail-id@gmail.com"
-                                  :smtp (:user "your-gmail-id@gmail.com"
-                                               :server "smtp.gmail.com"
-                                               :port 587
-                                               :stream-type ssl)))
+          '(("gmail-account-1"
+             :name "gmail-account-1"
+             :email "your-gmail-id@gmail.com"
+             :smtp (:user "your-gmail-id@gmail.com"
+                          :server "smtp.gmail.com"
+                          :port 587
+                          :stream-type ssl))
             ...))
 
 Once, `miagi` has loaded, you can start and open any of the accounts
