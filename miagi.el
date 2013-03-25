@@ -27,6 +27,9 @@
 (require 'message)
 (require 'smtpmail)
 
+(defconst miagi-version "0.0.1")
+(defconst miagi-x-mailer-header (format "emacs-miagi-%s" miagi-version))
+
 (defvar miagi-imap-buffer nil)
 (defvar miagi-account-name nil)
 (defvar miagi-user-mail-address nil)
@@ -643,7 +646,7 @@
           (smtpmail-starttls-credentials (list (list server port user nil))))
       (compose-mail to
                     (or subject "")
-                    (let ((hdrs '(("x-mailer" . "emacs-miagi-0.0.1"))))
+                    (let ((hdrs `(("x-mailer" . ,miagi-x-mailer-header))))
                       (when cc (push (cons "cc" cc) hdrs))
                       (when in-reply-to (push (cons "in-reply-to" in-reply-to) hdrs))
                       hdrs)
