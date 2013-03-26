@@ -27,7 +27,7 @@
 (require 'message)
 (require 'smtpmail)
 
-(defconst miagi-version "0.0.1")
+(defconst miagi-version "0.0.2")
 (defconst miagi-x-mailer-header (format "emacs-miagi-%s" miagi-version))
 
 (defvar miagi-imap-buffer nil)
@@ -667,6 +667,7 @@
     (miagi-compose-mail-1)))
 
 (defun miagi-setup-reply ()
+  (miagi-setup-compose)
   (goto-char (point-max))
   (message-yank-original))
 
