@@ -27,7 +27,7 @@
 (require 'message)
 (require 'smtpmail)
 
-(defconst miagi-version "0.0.2")
+(defconst miagi-version "0.0.3")
 (defconst miagi-x-mailer-header (format "emacs-miagi-%s" miagi-version))
 
 (defvar miagi-imap-buffer nil)
@@ -48,6 +48,7 @@
     (define-key map "r" 'miagi-reply)
     (define-key map "n" 'miagi-open-next-message)
     (define-key map "p" 'miagi-open-previous-message)
+    (define-key map "a" 'miagi)
     (define-key map "b" 'miagi-folder-select)
     (define-key map "/" 'miagi-search)
     (define-key map "i" 'miagi-open-inbox)
@@ -96,6 +97,17 @@
   (setq buffer-read-only t
         buffer-undo-list t))
 
+(eval-after-load 'bbdb
+  '(progn
+     (setq bbdb-mua-mode-alist
+           (let ((mail-modes (assq 'mail bbdb-mua-mode-alist)))
+             (cons (append mail-modes '(miagi-summary-mode miagi-message-mode))
+                   (remove mail-modes bbdb-mua-mode-alist))))
+     (define-key miagi-summary-mode-map ":" 'bbdb-mua-display-sender)
+     (define-key miagi-message-mode-map ":" 'bbdb-mua-display-sender)
+     (define-key miagi-summary-mode-map ";" 'bbdb-mua-edit-field-sender)
+     (define-key miagi-message-mode-map ";" 'bbdb-mua-edit-field-sender)))
+
 (defun miagi-get-message-buffer ()
   (let* ((buf-name (format "*miagi-message: %s*" miagi-account-name))
          (buf (get-buffer buf-name))
@@ -108,8 +120,14 @@
         (setq miagi-summary-buffer summary-buf)))
     buf))
 
+(defun miagi-opened-p ()
+  (let ((status nil))
+    (with-timeout (5 nil)
+      (setq status (imap-opened miagi-imap-buffer)))
+    status))
+
 (defun miagi-open-connection ()
-  (unless (imap-opened miagi-imap-buffer)
+  (unless (miagi-opened-p)
     (let ((server "imap.gmail.com")
           (port 993))
       (setq miagi-imap-buffer (imap-open server port 'ssl nil
@@ -166,11 +184,16 @@
     (or (miagi-decode-string (elt faddr 0))
         (concat (elt faddr 2) "@" (elt faddr 3)))))
 
-(defun miagi-format-address-full (addr-str)
-  (when (sequencep addr-str)
-    (let ((faddr (first addr-str)))
-      (concat (or (elt faddr 0) "")
-              " <" (elt faddr 2) "@" (elt faddr 3) ">"))))
+(defun miagi-format-address-full (addr)
+  (format "%s<%s@%s>"
+          (if-let (name (elt addr 0))
+              (format "%S " name)
+            "")
+          (elt addr 2)
+          (elt addr 3)))
+
+(defun miagi-idle ()
+  (imap-send-command "IDLE" miagi-imap-buffer))
 
 (defun miagi-ensure-open ()
   (miagi-open-connection)
@@ -497,37 +520,38 @@
              (cache-file (concat cache-dir part-ref))
              (beg (with-current-buffer (miagi-get-message-buffer)
                     (point))))
-        (if (and (file-readable-p cache-file)
-                 (not (file-directory-p cache-file)))
+        (cond
+         ((and (file-readable-p cache-file)
+               (not (file-directory-p cache-file)))
+          (with-current-buffer (miagi-get-message-buffer)
+            (insert-file-contents-literally cache-file)))
+         (body-part
+          (with-current-buffer miagi-imap-buffer
+            (imap-fetch uid (format "BODY[%s]" (getf body-part :ref))))
+          (let ((body (miagi-decode-part body-part
+                                         (third
+                                          (first
+                                           (miagi-message-get uid 'BODYDETAIL))))))
             (with-current-buffer (miagi-get-message-buffer)
-              (insert-file-contents-literally cache-file))
-          (progn
-            (when body-part
-              (with-current-buffer miagi-imap-buffer
-                (imap-fetch uid (format "BODY[%s]" (getf body-part :ref))))
-              (let ((body (miagi-decode-part body-part
-                                             (third
-                                              (first
-                                               (miagi-message-get uid 'BODYDETAIL))))))
-                (with-current-buffer (miagi-get-message-buffer)
-                  (let ((buffer-file-coding-system
-                         (when-let (charset (getf body-part :charset))
-                           (let ((cs (intern (downcase charset))))
-                             (if (memq cs coding-system-list)
-                                 cs
-                               'raw-text)))))
-                    (set-buffer-file-coding-system buffer-file-coding-system t)
-                    (insert body)
-                    (let ((coding-system-for-write 'raw-text))
-                      (write-region beg (point) cache-file))))))))
+              (let ((buffer-file-coding-system
+                     (when-let (charset (getf body-part :charset))
+                       (let ((cs (intern (downcase charset))))
+                         (if (memq cs coding-system-list)
+                             cs
+                           'raw-text)))))
+                (set-buffer-file-coding-system buffer-file-coding-system t)
+                (insert body)
+                (let ((coding-system-for-write 'raw-text))
+                  (write-region beg (point) cache-file)))))))
         (with-current-buffer (miagi-get-message-buffer)
           (if htmlp
               (let ((w3m-fill-column (- (window-width) 2))
                     (w3m-display-inline-images nil)
                     (browse-url-browser-function))
-                (w3m-region beg (point-max)))
-            (let ((fill-column (- (window-width) 2)))
-              (longlines-mode 1)
+                (w3m-region beg (point-max))
+                (w3m-minor-mode))
+            (progn
+              (visual-line-mode 1)
               (miagi-zap-cr-chars beg (point-max))))
           (text-linkify beg (point-max)))))))
 
@@ -535,29 +559,54 @@
   (let ((browse-url-browser-function 'browse-url-default-browser))
     (browse-url (browse-url-file-url (button-get button 'file)))))
 
+(defun string-trim (s)
+  (replace-regexp-in-string "[ \t]*" "" s))
+
+(defun miagi-cached-part-or-fetch (cache-dir uid part)
+  (destructuring-bind (&key ref content-type encoding attachment &allow-other-keys)
+      part
+    (let ((cache-file (concat cache-dir
+                              (if attachment
+                                  (string-trim attachment)
+                                ref))))
+      (if (file-exists-p cache-file)
+          cache-file
+        (progn
+          (with-current-buffer miagi-imap-buffer
+            (imap-fetch uid (format "BODY[%s]" ref)))
+          (let ((body (miagi-decode-part part
+                                         (third
+                                          (first
+                                           (miagi-message-get uid 'BODYDETAIL))))))
+            (with-temp-buffer
+              (insert body)
+              (let ((coding-system-for-write 'raw-text))
+                (write-region (point-min) (point-max) cache-file)))))))))
+
+(defun miagi-insert-message-envelopes (account uid body-structure)
+  (let ((cache-dir (ensure-directory (miagi-message-cache-dir account uid)))
+        (messages (remove-if-not (lambda (p)
+                                   (equal "message/rfc822" (getf p :content-type)))
+                                 body-structure)))
+    (dolist (message messages)
+      (let ((cache-file (miagi-cached-part-or-fetch cache-dir uid message)))
+        (with-current-buffer (miagi-get-message-buffer)
+          (goto-char (point-max))
+          (newline)
+          (insert "--- forwarded message ---")
+          (newline 2)
+          (insert-file-contents-literally cache-file))))))
+
 (defun miagi-insert-message-attachments (account uid body-structure)
   (let ((cache-dir (ensure-directory (miagi-message-cache-dir account uid)))
         (parts (remove-if-not (lambda (p) (getf p :attachment)) body-structure)))
     (dolist (part parts)
-      (destructuring-bind (&key ref content-type encoding attachment &allow-other-keys)
-          part
-        (let* ((filename (replace-regexp-in-string "[ \t]*" "" attachment))
-               (cache-file (concat cache-dir filename)))
-          (unless (file-exists-p cache-file)
-            (with-current-buffer miagi-imap-buffer
-              (imap-fetch uid (format "BODY[%s]" ref)))
-            (let ((body (miagi-decode-part part
-                                           (third
-                                            (first
-                                             (miagi-message-get uid 'BODYDETAIL))))))
-              (with-temp-buffer
-                (insert body)
-                (let ((coding-system-for-write 'raw-text))
-                  (write-region (point-min) (point-max) cache-file)))))
+      (let ((cache-file (miagi-cached-part-or-fetch cache-dir uid part)))
+        (when cache-file
           (with-current-buffer (miagi-get-message-buffer)
             (goto-char (point-max))
             (newline)
-            (insert-text-button (concat "[" filename "]")
+            (insert-text-button (concat "[" (file-name-nondirectory cache-file) "]")
                                 'action 'miagi-open-attachment
                                 'file cache-file)))))))
 
@@ -570,12 +619,12 @@
       (let ((inhibit-read-only t)
             (account-name miagi-account-name))
         (with-current-buffer (miagi-get-message-buffer)
-          (longlines-mode -1)
           (setq miagi-current-message uid)
           (delete-region (point-min) (point-max)))
         (miagi-insert-message-headers account-name uid)
         (let ((body-structure (miagi-message-body-structure uid)))
           (miagi-insert-message-body account-name uid body-structure)
+          (miagi-insert-message-envelopes account-name uid body-structure)
           (miagi-insert-message-attachments account-name uid body-structure))
         (with-current-buffer (miagi-get-message-buffer)
           (goto-char (point-min)))
@@ -634,63 +683,46 @@
   (let ((other-window-scroll-buffer (miagi-get-message-buffer)))
     (scroll-other-window '-)))
 
-(defun miagi-compose-mail-1 (&optional to cc subject in-reply-to continue
-                                       switch-function yank-action)
+(defun miagi-setup-compose ()
   (destructuring-bind (&key user server port stream-type &allow-other-keys)
       miagi-smtp-info
-    (let ((smtpmail-smtp-server server)
-          (smtpmail-smtp-service port)
-          (smtpmail-smtp-service 'starttls)
-          (user-mail-address user)
-          (smtpmail-auth-credentials (list (list server port user nil)))
-          (smtpmail-starttls-credentials (list (list server port user nil))))
-      (compose-mail to
-                    (or subject "")
-                    (let ((hdrs `(("x-mailer" . ,miagi-x-mailer-header))))
-                      (when cc (push (cons "cc" cc) hdrs))
-                      (when in-reply-to (push (cons "in-reply-to" in-reply-to) hdrs))
-                      hdrs)
-                    continue
-                    switch-function
-                    yank-action))))
+    (setq smtpmail-smtp-server server
+          smtpmail-smtp-service port
+          user-mail-address user
+          smtpmail-auth-credentials (list (list server port user nil))
+          smtpmail-starttls-credentials (list (list server port user nil))
+          smtpmail-smtp-user user)))
 
-(defun miagi-setup-compose ()
-  ;; fixme: this should be buffer local or dynamically bound,
-  ;; currently it's side-effecting the global binding, which is the
-  ;; only I could get the right smtp credentials in the composition
-  ;; buffer
-  (setq smtpmail-smtp-user (third (first smtpmail-auth-credentials))))
+(defun miagi-header-setup-hook ()
+  (goto-char (point-max))
+  (insert "X-Mailer: " miagi-x-mailer-header)
+  (newline))
 
 (defun miagi-compose ()
   (interactive)
-  (let ((message-setup-hook (cons 'miagi-setup-compose message-setup-hook)))
-    (miagi-compose-mail-1)))
+  (miagi-setup-compose)
+  (let ((message-header-setup-hook (cons 'miagi-header-setup-hook
+                                         message-header-setup-hook)))
+    (message-mail)))
 
 (defun miagi-setup-reply ()
   (miagi-setup-compose)
   (goto-char (point-max))
-  (message-yank-original))
+  (save-window-excursion
+    (message-yank-original)))
 
-(defun miagi-reply (&optional uid)
+(defun miagi-reply ()
   "Compose a reply to the message at point"
   (interactive)
-  (miagi-open-message)
-  (when-let (uid (or uid (get-text-property (point) 'uid)))
-    (let ((env (miagi-message-get uid 'ENVELOPE))
-          (message-setup-hook (cons 'miagi-setup-reply message-setup-hook)))
-      (miagi-compose-mail-1 (miagi-format-address-full
-                             (or (elt env miagi-envelope-reply-to-index)
-                                 (elt env miagi-envelope-from-index)
-                                 (elt env miagi-envelope-sender-index)))
-                            (miagi-format-address-full
-                             (elt env miagi-envelope-cc-index))
-                            (concat "Re: "
-                                    (message-strip-subject-re
-                                     (elt env miagi-envelope-subject-index)))
-                            (elt env miagi-envelope-message-id-index)
-                            nil
-                            nil
-                            (miagi-get-message-buffer)))))
+  (when-let (uid (get-text-property (point) 'uid))
+    (miagi-open-message)
+    (let ((smtp-info miagi-smtp-info))
+      (with-current-buffer (miagi-get-message-buffer)
+        (unwind-protect
+            (let* ((miagi-smtp-info smtp-info)
+                   (message-setup-hook (cons 'miagi-setup-reply message-setup-hook)))
+              (message-reply nil nil 'switch-to-buffer-other-window)
+              (visual-line-mode 1)))))))
 
 (defun miagi-message-reply ()
   (interactive)
@@ -703,11 +735,13 @@
     (with-current-buffer (miagi-get-summary-buffer name)
       (setq miagi-account-name name)
       (unless miagi-user-mail-address
-        (setq miagi-user-mail-address (or email
-                                          (read-from-minibuffer "Email address: "))))
+        (setq miagi-user-mail-address
+              (or email
+                  (read-from-minibuffer "Email address: "))))
       (unless miagi-user-mail-password
-        (setq miagi-user-mail-password (or password
-                                           (read-passwd "Password: "))))
+        (setq miagi-user-mail-password
+              (or password
+                  (read-passwd "Password: "))))
       (setq miagi-smtp-info smtp)
       (unless miagi-imap-buffer
         (miagi-open-connection))
