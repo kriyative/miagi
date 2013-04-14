@@ -38,6 +38,7 @@
 (defvar miagi-folders nil)
 (defvar miagi-current-folder nil)
 (defvar miagi-current-message nil)
+(defvar miagi-user-full-name user-full-name)
 
 (defvar miagi-summary-mode-map
   (let ((map (make-sparse-keymap)))
@@ -97,7 +98,7 @@
   (setq buffer-read-only t
         buffer-undo-list t))
 
-(eval-after-load 'bbdb
+(eval-after-load 'bbdb-mua
   '(progn
      (setq bbdb-mua-mode-alist
            (let ((mail-modes (assq 'mail bbdb-mua-mode-alist)))
@@ -163,7 +164,7 @@
   "Open the INBOX mailbox."
   (interactive)
   (miagi-select-folder "INBOX")
-  (miagi-get-messages))
+  (miagi-get-messages t))
 
 (defun miagi-format-date (date-str)
   (let* ((parsed-time (date-to-time date-str))
@@ -213,6 +214,42 @@
 (defun miagi-message-get (uid prop)
   (imap-message-get uid prop miagi-imap-buffer))
 
+(defun miagi-message-cache-file (uid file-name)
+  (let ((cache-dir (ensure-directory
+                    (miagi-message-cache-dir miagi-account-name uid))))
+    (concat cache-dir file-name)))
+
+(defun miagi-message-envelope-cached-p (uid)
+  (file-exists-p (miagi-message-cache-file uid "envelope")))
+
+(defun miagi-message-get-envelope (uid)
+  (if-let (env (miagi-message-get uid 'ENVELOPE))
+      env
+    (let ((cache-file (miagi-message-cache-file uid "envelope")))
+      (if (file-exists-p cache-file)
+          (let ((env (with-temp-buffer
+                       (insert-file-contents cache-file)
+                       (goto-char (point-min))
+                       (read (current-buffer)))))
+            (imap-message-put uid 'ENVELOPE env miagi-imap-buffer)
+            env)
+        (progn
+          (miagi-fetch-and-cache-message-envelopes (list uid))
+          (miagi-message-get uid 'ENVELOPE))))))
+
+(defun miagi-fetch-and-cache-message-envelopes (uids)
+  (let ((i 0))
+    (message "Fetching %d envelopes" (length uids))
+    (with-current-buffer miagi-imap-buffer
+      (imap-fetch uids "(ENVELOPE)"))
+    (dolist (uid uids)
+      (message "Caching envelope %d of %d" (incf i) (length uids))
+      (let ((cache-file (miagi-message-cache-file uid "envelope"))
+            (env (miagi-message-get uid 'ENVELOPE)))
+        (with-temp-buffer
+          (insert (prin1-to-string env))
+          (write-region nil nil cache-file nil 1))))))
+
 (defun miagi-decode-string (string)
   (when string (rfc2047-decode-string string)))
 
@@ -224,7 +261,7 @@
           (put-text-property start end 'face 'default)
         (put-text-property start end 'face 'bold)))))
 
-(defun miagi-render-summary (env)
+(defun miagi-render-summary (uid env)
   (let ((start (point)))
     (insert
      (format " %8s" (miagi-format-date (elt env miagi-envelope-date-index))))
@@ -244,29 +281,35 @@
     (miagi-summary-update-properties-at-point uid)
     (newline)))
 
-(defun miagi-get-messages-1 (expr)
-  (miagi-ensure-open)
+(defun envelope-date-newer (a b)
+  (not (time-less-p (date-to-time (elt (second a) miagi-envelope-date-index))
+                    (date-to-time (elt (second b) miagi-envelope-date-index)))))
+
+(defun miagi-get-messages-1 (expr &optional force-fetch-flags)
   (let ((inhibit-read-only t))
     (let* ((uids (imap-search expr miagi-imap-buffer))
-           (missing (remove-if (lambda (uid)
-                                 (miagi-message-get uid 'ENVELOPE))
-                               uids)))
+           (missing (remove-if 'miagi-message-envelope-cached-p uids)))
+      (with-current-buffer miagi-imap-buffer
+        (imap-fetch uids "(FLAGS)"))
       (when missing
-        (with-current-buffer miagi-imap-buffer
-          (imap-fetch missing "(FLAGS ENVELOPE)")))
+        (miagi-fetch-and-cache-message-envelopes missing))
       (save-excursion
         (delete-region (point-min) (point-max))
-        (dolist (uid (reverse uids))
-          (when-let (env (miagi-message-get uid 'ENVELOPE))
-            (miagi-render-summary env)))))))
+        (dolist (env (sort (mapcar (lambda (uid)
+                                     (list uid (miagi-message-get-envelope uid)))
+                                   uids)
+                           'envelope-date-newer))
+          (when env
+            (apply 'miagi-render-summary env)))))))
 
-(defun miagi-get-messages ()
+(defun miagi-get-messages (&optional force-fetch-flags)
   "Get the latest messages in the currently selected folder."
   (interactive)
+  (miagi-ensure-open)
   (let ((start-date (format-time-string
                      "%d-%b-%Y"
                      (time-subtract (current-time) (days-to-time 15)))))
-    (miagi-get-messages-1 (format "SINCE %s" start-date))))
+    (miagi-get-messages-1 (format "SINCE %s" start-date) force-fetch-flags)))
 
 (defun miagi-folder-select ()
   "Switch to a different folder in the summary view."
@@ -274,12 +317,12 @@
   (miagi-ensure-open)
   (let ((folder (completing-read "Folder: " (miagi-folder-list))))
     (miagi-select-folder folder)
-    (miagi-get-messages)))
+    (miagi-get-messages t)))
 
 (defun miagi-search (&optional terms)
   "Search the current folder using Gmail's search feature."
   (interactive "sSearch: ")
-  (miagi-get-messages-1 (format "X-GM-RAW %S" terms)))
+  (miagi-get-messages-1 (format "X-GM-RAW %S" terms) t))
 
 (defun miagi-zap-cr-chars (start end)
   (save-excursion
@@ -449,7 +492,7 @@
          (imap-buffer miagi-imap-buffer)
          (headers (with-temp-buffer
                     (if (file-exists-p cache-file)
-                        (insert-file-contents-literally cache-file)
+                        (insert-file-contents cache-file)
                       (progn
                         (with-current-buffer imap-buffer
                           (imap-fetch uid 'RFC822.HEADER))
@@ -524,7 +567,7 @@
          ((and (file-readable-p cache-file)
                (not (file-directory-p cache-file)))
           (with-current-buffer (miagi-get-message-buffer)
-            (insert-file-contents-literally cache-file)))
+            (insert-file-contents cache-file)))
          (body-part
           (with-current-buffer miagi-imap-buffer
             (imap-fetch uid (format "BODY[%s]" (getf body-part :ref))))
@@ -595,7 +638,7 @@
           (newline)
           (insert "--- forwarded message ---")
           (newline 2)
-          (insert-file-contents-literally cache-file))))))
+          (insert-file-contents cache-file))))))
 
 (defun miagi-insert-message-attachments (account uid body-structure)
   (let ((cache-dir (ensure-directory (miagi-message-cache-dir account uid)))
@@ -632,6 +675,13 @@
         (display-buffer (miagi-get-message-buffer)
                         'display-buffer-use-some-window)
         (setq miagi-current-message uid)))))
+
+(defun miagi-open-message-folder ()
+  "Open the enclosing folder of the current message"
+  (interactive)
+  (when-let (uid (get-text-property (point) 'uid))
+    (find-file-other-window
+     (miagi-message-cache-dir miagi-account-name uid))))
 
 (defun miagi-open-message-browse ()
   "Open the message at point using an external HTML browser"
@@ -683,12 +733,17 @@
   (let ((other-window-scroll-buffer (miagi-get-message-buffer)))
     (scroll-other-window '-)))
 
+(defun miagi-setup-sender ()
+  (destructuring-bind (&key user full-name &allow-other-keys)
+      miagi-smtp-info
+    (setq user-mail-address user
+          user-full-name (or full-name miagi-user-full-name))))
+
 (defun miagi-setup-compose ()
   (destructuring-bind (&key user server port stream-type &allow-other-keys)
       miagi-smtp-info
     (setq smtpmail-smtp-server server
           smtpmail-smtp-service port
-          user-mail-address user
           smtpmail-auth-credentials (list (list server port user nil))
           smtpmail-starttls-credentials (list (list server port user nil))
           smtpmail-smtp-user user)))
@@ -700,8 +755,9 @@
 
 (defun miagi-compose ()
   (interactive)
-  (miagi-setup-compose)
-  (let ((message-header-setup-hook (cons 'miagi-header-setup-hook
+  (miagi-setup-sender)
+  (let ((message-setup-hook (cons 'miagi-setup-compose message-setup-hook))
+        (message-header-setup-hook (cons 'miagi-header-setup-hook
                                          message-header-setup-hook)))
     (message-mail)))
 
@@ -719,9 +775,10 @@
     (let ((smtp-info miagi-smtp-info))
       (with-current-buffer (miagi-get-message-buffer)
         (unwind-protect
-            (let* ((miagi-smtp-info smtp-info)
-                   (message-setup-hook (cons 'miagi-setup-reply message-setup-hook)))
-              (message-reply nil nil 'switch-to-buffer-other-window)
+            (let ((miagi-smtp-info smtp-info)
+                  (message-setup-hook (cons 'miagi-setup-reply message-setup-hook)))
+              (miagi-setup-sender)
+              (message-reply nil t 'switch-to-buffer-other-window)
               (visual-line-mode 1)))))))
 
 (defun miagi-message-reply ()
@@ -747,7 +804,7 @@
         (miagi-open-connection))
       (miagi-ensure-open)
       (miagi-load-folders)
-      (miagi-get-messages)
+      (miagi-get-messages t)
       (switch-to-buffer (current-buffer)))))
 
 (defvar miagi-accounts nil)
