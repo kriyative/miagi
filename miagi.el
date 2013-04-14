@@ -733,15 +733,17 @@
   (let ((other-window-scroll-buffer (miagi-get-message-buffer)))
     (scroll-other-window '-)))
 
+(defvar *miagi-smtp-info* nil)
+
 (defun miagi-setup-sender ()
   (destructuring-bind (&key user full-name &allow-other-keys)
-      miagi-smtp-info
+      *miagi-smtp-info*
     (setq user-mail-address user
           user-full-name (or full-name miagi-user-full-name))))
 
 (defun miagi-setup-compose ()
   (destructuring-bind (&key user server port stream-type &allow-other-keys)
-      miagi-smtp-info
+      *miagi-smtp-info*
     (setq smtpmail-smtp-server server
           smtpmail-smtp-service port
           smtpmail-auth-credentials (list (list server port user nil))
@@ -755,10 +757,11 @@
 
 (defun miagi-compose ()
   (interactive)
-  (miagi-setup-sender)
-  (let ((message-setup-hook (cons 'miagi-setup-compose message-setup-hook))
+  (let ((*miagi-smtp-info* miagi-smtp-info)
+        (message-setup-hook (cons 'miagi-setup-compose message-setup-hook))
         (message-header-setup-hook (cons 'miagi-header-setup-hook
                                          message-header-setup-hook)))
+    (miagi-setup-sender)
     (message-mail)))
 
 (defun miagi-setup-reply ()
@@ -775,7 +778,8 @@
     (let ((smtp-info miagi-smtp-info))
       (with-current-buffer (miagi-get-message-buffer)
         (unwind-protect
-            (let ((miagi-smtp-info smtp-info)
+            (let ((*miagi-smtp-info* smtp-info)
+                  (miagi-smtp-info smtp-info)
                   (message-setup-hook (cons 'miagi-setup-reply message-setup-hook)))
               (miagi-setup-sender)
               (message-reply nil t 'switch-to-buffer-other-window)
