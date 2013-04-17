@@ -1,5 +1,5 @@
 (miagi
- :version "0.0.4"
+ :version "0.0.5"
  :doc "MIAGI is a Gmail interface (for Emacs)"
  :files ("miagi.el" "README.md")
  :requires ((emacs-w3m "1.4.501")))
