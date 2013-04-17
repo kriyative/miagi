@@ -1,0 +1,13 @@
+#+STARTUP: logdone
+
+* TODO commands to `Archive` and `Trash` messages		    :feature:
+* TODO poll open INBOX'es periodically (i.e. `biff`)		    :feature:
+  poll and post notification in modeline
+* TODO download attachments lazily 				    :feature:
+  only download when the attachment button is clicked in the message view
+* TODO add gmail compatible keybindings				    :feature:
+* TODO "conversations" view					    :feature:
+* DONE fix cache folder organization					:bug:
+  CLOSED: [2013-04-17 Wed 08:22]
+* DONE multiple smtp profiles						:bug:
+  CLOSED: [2013-04-17 Wed 08:21]
