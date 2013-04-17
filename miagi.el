@@ -738,14 +738,19 @@
     (setq user-mail-address user
           user-full-name (or full-name miagi-user-full-name))))
 
-(defun miagi-setup-compose ()
+(defun miagi-setup-smtp ()
   (destructuring-bind (&key user server port stream-type &allow-other-keys)
-      *miagi-smtp-info*
+      miagi-smtp-info
     (setq smtpmail-smtp-server server
           smtpmail-smtp-service port
           smtpmail-auth-credentials (list (list server port user nil))
           smtpmail-starttls-credentials (list (list server port user nil))
           smtpmail-smtp-user user)))
+
+(defun miagi-setup-compose ()
+  (make-local-variable 'miagi-smtp-info)
+  (add-hook 'message-send-hook 'miagi-setup-smtp)
+  (setq miagi-smtp-info *miagi-smtp-info*))
 
 (defun miagi-header-setup-hook ()
   (goto-char (point-max))
@@ -776,6 +781,7 @@
       (with-current-buffer (miagi-get-message-buffer)
         (unwind-protect
             (let ((*miagi-smtp-info* smtp-info)
+                  (message-send-hook (cons 'miagi-setup-smtp message-send-hook))
                   (miagi-smtp-info smtp-info)
                   (message-setup-hook (cons 'miagi-setup-reply message-setup-hook)))
               (miagi-setup-sender)
