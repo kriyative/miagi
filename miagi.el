@@ -122,10 +122,11 @@
     buf))
 
 (defun miagi-opened-p ()
-  (let ((status nil))
-    (with-timeout (5 nil)
-      (setq status (imap-opened miagi-imap-buffer)))
-    status))
+  (when (get-buffer-process miagi-imap-buffer)
+    (if (process-live-p miagi-imap-buffer)
+        (setq status (imap-opened miagi-imap-buffer))
+      (delete-process miagi-imap-buffer)
+      (miagi-opened-p))))
 
 (defun miagi-open-connection ()
   (unless (miagi-opened-p)
