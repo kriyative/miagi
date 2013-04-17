@@ -215,9 +215,21 @@
 (defun miagi-message-get (uid prop)
   (imap-message-get uid prop miagi-imap-buffer))
 
+(defun ensure-directory (dir)
+  (unless (file-directory-p dir)
+    (mkdir dir t))
+  dir)
+
+(defun miagi-message-cache-dir (account folder uid)
+  (assert (not (null account)))
+  (file-name-as-directory
+   (expand-file-name (format "~/Mail/miagi/%s/%s/%s" account folder uid))))
+
 (defun miagi-message-cache-file (uid file-name)
   (let ((cache-dir (ensure-directory
-                    (miagi-message-cache-dir miagi-account-name uid))))
+                    (miagi-message-cache-dir miagi-account-name
+                                             miagi-current-folder
+                                             uid))))
     (concat cache-dir file-name)))
 
 (defun miagi-message-envelope-cached-p (uid)
@@ -474,22 +486,11 @@
         (funcall decoder string)
       string)))
 
-(defun miagi-message-cache-dir (account uid)
-  (assert (not (null account)))
-  (file-name-as-directory
-   (expand-file-name (format "~/Mail/miagi/%s/%s" account uid))))
-
-(defun ensure-directory (dir)
-  (unless (file-directory-p dir)
-    (mkdir dir t))
-  dir)
-
 (defconst miagi-visible-headers
   '(from to cc bcc subject date sender))
 
-(defun miagi-insert-message-headers (account uid)
-  (let* ((cache-dir (ensure-directory (miagi-message-cache-dir account uid)))
-         (cache-file (concat cache-dir "headers"))
+(defun miagi-insert-message-headers (uid)
+  (let* ((cache-file (miagi-message-cache-file uid "headers"))
          (imap-buffer miagi-imap-buffer)
          (headers (with-temp-buffer
                     (if (file-exists-p cache-file)
@@ -556,48 +557,47 @@
                           'url (buffer-substring-no-properties beg end)
                           'action 'text-link-click)))))
 
-(defun miagi-insert-message-body (account uid body-structure)
-  (let ((cache-dir (ensure-directory (miagi-message-cache-dir account uid))))
-    (destructuring-bind (body-part htmlp)
-        (miagi-select-text-part-prefer-html body-structure)
-      (let* ((part-ref (getf body-part :ref))
-             (cache-file (concat cache-dir part-ref))
-             (beg (with-current-buffer (miagi-get-message-buffer)
-                    (point))))
-        (cond
-         ((and (file-readable-p cache-file)
-               (not (file-directory-p cache-file)))
-          (with-current-buffer (miagi-get-message-buffer)
-            (insert-file-contents cache-file)))
-         (body-part
-          (with-current-buffer miagi-imap-buffer
-            (imap-fetch uid (format "BODY[%s]" (getf body-part :ref))))
-          (let ((body (miagi-decode-part body-part
-                                         (third
-                                          (first
-                                           (miagi-message-get uid 'BODYDETAIL))))))
-            (with-current-buffer (miagi-get-message-buffer)
-              (let ((buffer-file-coding-system
-                     (when-let (charset (getf body-part :charset))
-                       (let ((cs (intern (downcase charset))))
-                         (if (memq cs coding-system-list)
-                             cs
-                           'raw-text)))))
-                (set-buffer-file-coding-system buffer-file-coding-system t)
-                (insert body)
-                (let ((coding-system-for-write 'raw-text))
-                  (write-region beg (point) cache-file)))))))
+(defun miagi-insert-message-body (uid body-structure)
+  (destructuring-bind (body-part htmlp)
+      (miagi-select-text-part-prefer-html body-structure)
+    (let* ((part-ref (getf body-part :ref))
+           (cache-file (miagi-message-cache-file uid part-ref))
+           (beg (with-current-buffer (miagi-get-message-buffer)
+                  (point))))
+      (cond
+       ((and (file-readable-p cache-file)
+             (not (file-directory-p cache-file)))
         (with-current-buffer (miagi-get-message-buffer)
-          (if htmlp
-              (let ((w3m-fill-column (- (window-width) 2))
-                    (w3m-display-inline-images nil)
-                    (browse-url-browser-function))
-                (w3m-region beg (point-max))
-                (w3m-minor-mode))
-            (progn
-              (visual-line-mode 1)
-              (miagi-zap-cr-chars beg (point-max))))
-          (text-linkify beg (point-max)))))))
+          (insert-file-contents cache-file)))
+       (body-part
+        (with-current-buffer miagi-imap-buffer
+          (imap-fetch uid (format "BODY[%s]" (getf body-part :ref))))
+        (let ((body (miagi-decode-part body-part
+                                       (third
+                                        (first
+                                         (miagi-message-get uid 'BODYDETAIL))))))
+          (with-current-buffer (miagi-get-message-buffer)
+            (let ((buffer-file-coding-system
+                   (when-let (charset (getf body-part :charset))
+                     (let ((cs (intern (downcase charset))))
+                       (if (memq cs coding-system-list)
+                           cs
+                         'raw-text)))))
+              (set-buffer-file-coding-system buffer-file-coding-system t)
+              (insert body)
+              (let ((coding-system-for-write 'raw-text))
+                (write-region beg (point) cache-file)))))))
+      (with-current-buffer (miagi-get-message-buffer)
+        (if htmlp
+            (let ((w3m-fill-column (- (window-width) 2))
+                  (w3m-display-inline-images nil)
+                  (browse-url-browser-function))
+              (w3m-region beg (point-max))
+              (w3m-minor-mode))
+          (progn
+            (visual-line-mode 1)
+            (miagi-zap-cr-chars beg (point-max))))
+        (text-linkify beg (point-max))))))
 
 (defun miagi-open-attachment (button)
   (let ((browse-url-browser-function 'browse-url-default-browser))
@@ -606,13 +606,13 @@
 (defun string-trim (s)
   (replace-regexp-in-string "[ \t]*" "" s))
 
-(defun miagi-cached-part-or-fetch (cache-dir uid part)
+(defun miagi-cached-part-or-fetch (uid part)
   (destructuring-bind (&key ref content-type encoding attachment &allow-other-keys)
       part
-    (let ((cache-file (concat cache-dir
-                              (if attachment
-                                  (string-trim attachment)
-                                ref))))
+    (let ((cache-file (miagi-message-cache-file uid
+                                                (if attachment
+                                                    (string-trim attachment)
+                                                  ref))))
       (if (file-exists-p cache-file)
           cache-file
         (progn
@@ -627,13 +627,12 @@
               (let ((coding-system-for-write 'raw-text))
                 (write-region (point-min) (point-max) cache-file)))))))))
 
-(defun miagi-insert-message-envelopes (account uid body-structure)
-  (let ((cache-dir (ensure-directory (miagi-message-cache-dir account uid)))
-        (messages (remove-if-not (lambda (p)
+(defun miagi-insert-message-envelopes (uid body-structure)
+  (let ((messages (remove-if-not (lambda (p)
                                    (equal "message/rfc822" (getf p :content-type)))
                                  body-structure)))
     (dolist (message messages)
-      (let ((cache-file (miagi-cached-part-or-fetch cache-dir uid message)))
+      (let ((cache-file (miagi-cached-part-or-fetch uid message)))
         (with-current-buffer (miagi-get-message-buffer)
           (goto-char (point-max))
           (newline)
@@ -641,11 +640,10 @@
           (newline 2)
           (insert-file-contents cache-file))))))
 
-(defun miagi-insert-message-attachments (account uid body-structure)
-  (let ((cache-dir (ensure-directory (miagi-message-cache-dir account uid)))
-        (parts (remove-if-not (lambda (p) (getf p :attachment)) body-structure)))
+(defun miagi-insert-message-attachments (uid body-structure)
+  (let ((parts (remove-if-not (lambda (p) (getf p :attachment)) body-structure)))
     (dolist (part parts)
-      (let ((cache-file (miagi-cached-part-or-fetch cache-dir uid part)))
+      (let ((cache-file (miagi-cached-part-or-fetch uid part)))
         (when cache-file
           (with-current-buffer (miagi-get-message-buffer)
             (goto-char (point-max))
@@ -660,16 +658,15 @@
   (miagi-ensure-open)
   (when-let (uid (get-text-property (point) 'uid))
     (unless (eq uid miagi-current-message)
-      (let ((inhibit-read-only t)
-            (account-name miagi-account-name))
+      (let ((inhibit-read-only t))
         (with-current-buffer (miagi-get-message-buffer)
           (setq miagi-current-message uid)
           (delete-region (point-min) (point-max)))
-        (miagi-insert-message-headers account-name uid)
+        (miagi-insert-message-headers uid)
         (let ((body-structure (miagi-message-body-structure uid)))
-          (miagi-insert-message-body account-name uid body-structure)
-          (miagi-insert-message-envelopes account-name uid body-structure)
-          (miagi-insert-message-attachments account-name uid body-structure))
+          (miagi-insert-message-body uid body-structure)
+          (miagi-insert-message-envelopes uid body-structure)
+          (miagi-insert-message-attachments uid body-structure))
         (with-current-buffer (miagi-get-message-buffer)
           (goto-char (point-min)))
         (miagi-summary-update-properties-at-point uid)
@@ -682,7 +679,7 @@
   (interactive)
   (when-let (uid (get-text-property (point) 'uid))
     (find-file-other-window
-     (miagi-message-cache-dir miagi-account-name uid))))
+     (miagi-message-cache-dir miagi-account-name miagi-current-folder uid))))
 
 (defun miagi-open-message-browse ()
   "Open the message at point using an external HTML browser"
@@ -694,8 +691,7 @@
           (miagi-select-text-part-prefer-html body-structure)
         (let* ((part-ref (getf body-part :ref))
                (account miagi-account-name)
-               (cache-dir (ensure-directory (miagi-message-cache-dir account uid)))
-               (cache-file (concat cache-dir part-ref)))
+               (cache-file (miagi-message-cache-file uid part-ref)))
           (let ((browse-url-browser-function 'browse-url-default-browser))
             (browse-url
              (browse-url-file-url cache-file))))))))
