@@ -539,10 +539,20 @@
 
 (defun miagi-message-body-structure (uid)
   (let ((bs (or (miagi-message-get uid 'BODYSTRUCTURE)
-                (progn
-                  (with-current-buffer miagi-imap-buffer
-                    (imap-fetch uid "(BODYSTRUCTURE)"))
-                  (miagi-message-get uid 'BODYSTRUCTURE)))))
+                (let ((cache-file (miagi-message-cache-file uid "bodystructure")))
+                  (if (file-exists-p cache-file)
+                      (with-temp-buffer
+                        (insert-file-contents-literally cache-file)
+                        (goto-char (point-min))
+                        (read (current-buffer)))
+                    (progn
+                      (with-current-buffer miagi-imap-buffer
+                        (imap-fetch uid "(BODYSTRUCTURE)"))
+                      (let ((bs (miagi-message-get uid 'BODYSTRUCTURE)))
+                        (with-temp-buffer
+                          (insert (prin1-to-string bs))
+                          (write-region (point-min) (point-max) cache-file))
+                        bs)))))))
     (miagi-parse-body-structure (wrap-list bs))))
 
 (defun miagi-select-text-part (body-structure &optional preferences)
@@ -575,18 +585,37 @@
                           'url (buffer-substring-no-properties beg end)
                           'action 'text-link-click)))))
 
+(defun miagi-ensure-html-tag (beg end)
+  (let (new-end
+        (start-tag "<html>\n"))
+    (save-excursion
+      (goto-char beg)
+      (unless (search-forward "<html>" nil t)
+        (goto-char beg)
+        (insert start-tag)
+        (goto-char end)
+        (forward-char (length start-tag))
+        (insert "</html>\n")
+        (setq new-end (point))))))
+
 (defun miagi-insert-message-body (uid body-structure)
   (destructuring-bind (body-part htmlp)
       (miagi-select-text-part-prefer-html body-structure)
     (let* ((part-ref (getf body-part :ref))
            (cache-file (miagi-message-cache-file uid part-ref))
            (beg (with-current-buffer (miagi-get-message-buffer)
-                  (point))))
+                  (point)))
+           (coding-system (when-let (charset (getf body-part :charset))
+                            (let ((cs (intern (downcase charset))))
+                              (if (memq cs coding-system-list)
+                                  cs
+                                'raw-text)))))
       (cond
        ((and (file-readable-p cache-file)
              (not (file-directory-p cache-file)))
-        (with-current-buffer (miagi-get-message-buffer)
-          (insert-file-contents cache-file)))
+        (let ((coding-system-for-read coding-system))
+          (with-current-buffer (miagi-get-message-buffer)
+            (insert-file-contents cache-file))))
        (body-part
         (with-current-buffer miagi-imap-buffer
           (imap-fetch uid (format "BODY[%s]" (getf body-part :ref))))
@@ -595,16 +624,11 @@
                                         (first
                                          (miagi-message-get uid 'BODYDETAIL))))))
           (with-current-buffer (miagi-get-message-buffer)
-            (let ((buffer-file-coding-system
-                   (when-let (charset (getf body-part :charset))
-                     (let ((cs (intern (downcase charset))))
-                       (if (memq cs coding-system-list)
-                           cs
-                         'raw-text)))))
-              (set-buffer-file-coding-system buffer-file-coding-system t)
+            (let ((coding-system-for-write coding-system))
               (insert body)
-              (let ((coding-system-for-write 'raw-text))
-                (write-region beg (point) cache-file)))))))
+              (let ((coding-system-for-write 'raw-text)
+                    (end (point)))
+                (write-region beg end cache-file)))))))
       (with-current-buffer (miagi-get-message-buffer)
         (if htmlp
             (let ((w3m-fill-column (- (window-width) 2))
