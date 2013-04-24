@@ -461,7 +461,7 @@
                                                     (format "%s%d."
                                                             (or prefix "")
                                                             index))))
-               ((equal "BOUNDARY" (car el)) plist)
+               ((member (car el) '("INLINE" "BOUNDARY")) plist)
                (t
                 (condition-case c
                     (destructuring-bind (major minor charset
