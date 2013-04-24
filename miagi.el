@@ -143,6 +143,12 @@
                        miagi-user-mail-password
                        miagi-imap-buffer)))
 
+(defun miagi-kill-connection ()
+  (interactive)
+  (when miagi-imap-buffer
+    (ignore-errors (kill-buffer miagi-imap-buffer))
+    (setq miagi-imap-buffer nil)))
+
 (defun miagi-close ()
   (imap-logout miagi-imap-buffer))
 
