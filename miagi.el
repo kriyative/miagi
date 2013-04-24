@@ -733,10 +733,15 @@
           (miagi-select-text-part-prefer-html body-structure)
         (let* ((part-ref (getf body-part :ref))
                (account miagi-account-name)
-               (cache-file (miagi-message-cache-file uid part-ref)))
+               (cache-file (miagi-message-cache-file uid part-ref))
+               (tmp-file (make-temp-file "miagi-tmp" nil ".html")))
+          (with-temp-buffer
+            (insert-file-contents-literally cache-file)
+            (miagi-ensure-html-tag (point-min) (point-max))
+            (write-region (point-min) (point-max) tmp-file))
           (let ((browse-url-browser-function 'browse-url-default-browser))
             (browse-url
-             (browse-url-file-url cache-file))))))))
+             (browse-url-file-url tmp-file))))))))
 
 (defun miagi-open-next-message ()
   "Move to the next message in the folder, and open it."
