@@ -71,8 +71,11 @@
   (make-local-variable 'miagi-current-message)
   (setq buffer-read-only t))
 
+(defun miagi-get-summary-buffer-name (account &optional folder)
+  (format "*miagi-summary: %s+%s*" account (or folder "INBOX")))
+
 (defun miagi-get-summary-buffer (account &optional folder)
-  (let* ((buf-name (format "*miagi-summary: %s+%s*" account (or folder "INBOX")))
+  (let* ((buf-name (miagi-get-summary-buffer-name account folder))
          (buf (get-buffer buf-name)))
     (unless buf
       (setq buf (get-buffer-create buf-name))
@@ -303,6 +306,15 @@
 (defun envelope-date-newer (a b)
   (not (time-less-p (date-to-time (elt (second a) miagi-envelope-date-index))
                     (date-to-time (elt (second b) miagi-envelope-date-index)))))
+
+(defun miagi-get-unread ()
+  (let (unread)
+    (imap-message-map (lambda (uid flags)
+                        (unless (member "\\Seen" flags)
+                          (push uid unread)))
+                      'FLAGS
+                      miagi-imap-buffer)
+    unread))
 
 (defun miagi-get-messages-1 (expr &optional force-fetch-flags)
   (let ((inhibit-read-only t))
@@ -830,5 +842,29 @@
 (setq starttls-extra-arguments nil ; '("--insecure")
       message-cite-style nil
       mml-enable-flowed nil)
+
+(defun miagi-check-new-messages ()
+  (interactive)
+  (reduce (lambda (sum account)
+            (let* ((name (first account))
+                   (buf-name (miagi-get-summary-buffer-name name))
+                   (buf (get-buffer buf-name)))
+              (if buf
+                  (with-current-buffer buf
+                    (let ((unread (length (miagi-get-unread))))
+                      (if (< 0 unread)
+                          (cons (cons name unread) sum)
+                        sum)))
+                sum)))
+          miagi-accounts
+          :initial-value nil))
+
+(defun miagi-display-time-mail-function ()
+  (let ((unread (miagi-check-new-messages)))
+    (message "checking for new mail...%s"
+             (mapconcat (lambda (x) (format "%s(%d)" (car x) (cdr x))) unread ","))
+    (not (null unread))))
+
+(setq display-time-mail-function 'miagi-display-time-mail-function)
 
 (provide 'miagi)
