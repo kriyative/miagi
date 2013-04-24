@@ -814,7 +814,7 @@
   (save-window-excursion
     (message-yank-original)))
 
-(defun miagi-reply ()
+(defun miagi-reply-or-forward (&optional forwardp)
   "Compose a reply to the message at point"
   (interactive)
   (when-let (uid (get-text-property (point) 'uid))
@@ -827,13 +827,20 @@
                   (miagi-smtp-info smtp-info)
                   (message-setup-hook (cons 'miagi-setup-reply message-setup-hook)))
               (miagi-setup-sender)
-              (message-reply nil t 'switch-to-buffer-other-window)
+              (if forwardp
+                  (message-forward nil nil)
+                (message-reply nil t 'switch-to-buffer-other-window))
               (visual-line-mode 1)))))))
 
 (defun miagi-message-reply ()
   (interactive)
   (with-current-buffer miagi-summary-buffer
-    (miagi-reply)))
+    (miagi-reply-or-forward)))
+
+(defun miagi-message-forward ()
+  (interactive)
+  (with-current-buffer miagi-summary-buffer
+    (miagi-reply-or-forward t)))
 
 (defun miagi-open-account (account-plist)
   (destructuring-bind (&key name email password smtp &allow-other-keys)
